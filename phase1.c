@@ -46,6 +46,10 @@ write init as if there are other phases running
  * These functions must be provided by Phase 1.
  */
 struct proc{
+    proc *older;
+    proc *younger; 
+    proc *child;   
+    proc *parent;
     proc dead_children[MAXPROC];
     int dead_count;
     proc alive_children[MAXPROC];
@@ -119,8 +123,19 @@ int spork(char *name, int (*startFunc)(char*), char *arg, int stackSize, int pri
             new->pid_parent=curr_pid;
             strcpy(new->name,name);
             curr_pid=new->pid;
-            proc *parent=&table[curr_pid-1];
-            parent->alive_children[parent_proc->alive_count++]=new;
+            proc *par=&table[curr_pid-1];
+            new->parent=par;
+            if(par->child==NULL) {
+                par->child= new;
+            } else {
+                proc*old=par->child;
+                proc*curr=old;
+                while(curr->younger!=NULL) {
+                    curr=curr->younger;
+                }
+                curr->younger=new;
+                new->older=curr;
+            }
             int p=new->prio-1;
             queue[p][queue_len[p]++]=new;
         }
@@ -134,32 +149,37 @@ int  join(int *status){
         return -3;
     }
     proc *curr=&table[curr_pid-1];
-    if(curr->dead_count>0){
-        proc *dead=curr->dead_children[curr->dead_count]
+    proc *dead=NULL;
+    proc *child = current_proc->oldest;
+    while(child!=NULL) {
+        if(child->state==-2) {
+            dead=child;
+            break;
+        }
+        child=child->younger;
+    }
+    if(dead!=NULL) {
         *status=dead->exit_status;
+        if (dead->older!=NULL) {
+            dead->older->younger=dead->younger;
+        } else {
+            curr->oldest=dead->younger;
+        }
+        if (dead->younger!=NULL) {
+            dead->younger->older=dead->older;
+        }
         return dead->pid;
     }
-    if(curr->alive_count!=0){
+    if(curr->oldest!=0){
         return -1;
     }
     return -2;
 }
 
 void quit_phase_1a(int status, int switchToPid) {
-    proc *curr=&table[getpid()-1];
+    proc *curr=&table[curr_pid-1];
     curr->exit_status=status;
     curr->state=-2;
-    proc *parent=&table[curr->pid_parent-1];
-    for(int i=0; i<parent->alive_count;i++){
-        if(parent->alive_children[i]==curr){
-            for(int j=i; j<parent->alive_count-1;j++) {
-                parent->alive_children[j]=parent->alive_children[j+1];
-            }
-            parent->alive_count--;
-            parent->dead_children[parent->dead_count++]=curr;
-            break;
-        }
-    }
     int p=curr->prio-1;
     for(int i=0;i<queue_len[p];i++) {
         if(queue[p][i]==curr) {
