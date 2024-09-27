@@ -54,17 +54,22 @@ struct proc *queue[6][MAXPROC];
 int queue_len[6];
 int curr_pid=-1;
 struct proc *curr_pcb=NULL;
-#ifndef EXTERNAL_TESTCASE_MAIN
-int testcase_main(){
-    return testcase_main();
-}
-#endif
+// #ifndef EXTERNAL_TESTCASE_MAIN
+// int testcase_main(){
+//     return testcase_main();
+// }
+// #endif
 int testcase_bounce(void*){
     return testcase_main();
 }
 void trampoline() {
+
     int curr=getpid();
+    for(int i = curr; (i<=MAXPROC && table[i].pid!=0); i++){
+        curr = table[i].pid;
+    }
     table[curr-1].startFunc(table[curr-1].arg);
+    quit_phase_1a(0, table[curr_pid - 1].parent->pid);
 }
 int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int priority) {
     if(stackSize<USLOSS_MIN_STACK){
@@ -79,9 +84,10 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             new->startFunc=startFunc;
             new->arg=arg;
             strcpy(new->name,name);
-            curr_pid=new->pid;
-            proc *par=&table[curr_pid-1];
+            //curr_pid=new->pid;
+            proc *par=&table[new->pid -2];
             new->parent=par;
+            new->child = 0;
             if(par->child==NULL) {
                 par->child= new;
             } else {
@@ -97,13 +103,14 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             USLOSS_ContextInit(&new->context,new->stack,USLOSS_MIN_STACK,NULL,trampoline);
             int p=new->prio-1;
             queue[p][queue_len[p]++]=new;
-            return curr_pid;
+            return new->pid;
         }
     }
     return -1;
 }
 
 int join(int *status){
+    
     if(status==NULL){
         return -3;
     }
@@ -130,12 +137,14 @@ int join(int *status){
         return dead->pid;
     }
     if(curr->child!=0){
+        USLOSS_Console("curr->child = %d\n", curr->child->pid);
         return -1;
     }
     return -2;
 }
 
 __attribute__((noreturn)) void quit_phase_1a(int status, int switchToPid) {
+    
     proc *curr=&table[curr_pid-1];
     curr->exit_status=status;
     curr->state=-2;
@@ -149,7 +158,7 @@ __attribute__((noreturn)) void quit_phase_1a(int status, int switchToPid) {
             break;
         }
     }   
-    USLOSS_ContextSwitch(&table[curr_pid-1].context,&table[switchToPid-1].context);
+    TEMP_switchTo(switchToPid);
 }
 
 int  getpid(void){
@@ -170,28 +179,43 @@ void dumpProcesses(void){
     }
 }
 void TEMP_switchTo(int pid){
+    //USLOSS_Console("Name: %s, PID: %d\n", &table[curr_pid-1].name, table[curr_pid-1].pid);
+    //USLOSS_Console("Name: %s, PID: %d\n", &table[pid-1].name, table[pid-1].pid);
+    int old = curr_pid;
     curr_pid=pid;
     curr_pcb=&table[pid-1];
+    USLOSS_ContextSwitch(&table[old-1].context,&table[pid-1].context);
+    
+    
 }
 void phase1_init(void) {
     memset(table,0,sizeof(table));
-    memset(queue_len,0,sizeof(table));
+    memset(queue_len,0,sizeof(queue_len));
     for(int i=0; i<=MAXPROC; i++){
         table[i].pid=0;
         table[i].status=0;
     }
     curr_pid=1;
-    strcpy(table[1].name, "init");
-    table[1].pid=1;
-    table[1].status=0;  
-    table[1].prio=6;
-    table[1].state=RUNNING;
-    curr_pcb=&table[1];
+    strcpy(table[0].name, "init");
+    table[0].pid = 1;
+
+    table[0].status=0;  
+    table[0].prio=6;
+    table[0].state=RUNNING;
+    curr_pcb=&table[0];
+    USLOSS_Console("Phase 1A TEMPORARY HACK: init() manually switching to PID 1.\n");
+    TEMP_switchTo(1);
+    phase2_start_service_processes();
+    phase3_start_service_processes();
+    phase4_start_service_processes();
+    phase5_start_service_processes();
     int testcase=spork("testcase_main",testcase_bounce, NULL, USLOSS_MIN_STACK, 3);
-    USLOSS_ContextSwitch(&table[1].context,&table[testcase-1].context);
-    printf("testcase_main returned...haulting");
+    USLOSS_Console("Phase 1A TEMPORARY HACK: init() manually switching to testcase_main() after using spork() to create it.\n");
+    TEMP_switchTo(testcase);
+    USLOSS_Console("Phase 1A TEMPORARY HACK: testcase_main() returned, simulation will now halt.\n");
+    //printf("testcase_main returned...haulting");
     USLOSS_Halt(0);
-    int i=2;
+    int i=1;
     while(1){
         int join_val=join(&table[i].status);
         if(join_val==-2){
