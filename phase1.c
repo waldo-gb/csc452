@@ -163,28 +163,28 @@ int  getpid(void){
 void dumpProcesses() {
     USLOSS_Console("**************** Calling dumpProcesses() *******************\n");
     USLOSS_Console("- PID  PPID  NAME              PRIORITY  STATE\n");
-    for (int i = 0; i < MAXPROC; i++) {
-        if (table[i].pid == 0) continue;
+    for (int i=0; i<MAXPROC;i++) {
+        if (table[i].pid==0) continue;
         char *str;
         switch (table[i].state) {
             case DEAD:
-                str = "Terminated";
+                str="Terminated";
                 break;
             case BLOCKED:
-                str = "Blocked";
+                str="Blocked";
                 break;
             case READY:
-                str = "Running";
+                str="Running";
                 break;
             case RUNNING:
-                str = "Runnable";
+                str="Runnable";
                 break;
             default:
-                str = "Unknown";
+                str="Unknown";
         }
         USLOSS_Console("- %3d  %4d  %-15s  %8d  %s\n", 
             table[i].pid, 
-            table[i].parent != NULL ? table[i].parent->pid : 0, // If no parent, PPID is 0
+            table[i].parent != NULL ? table[i].parent->pid : 0,
             table[i].name, 
             table[i].prio, 
             str);
