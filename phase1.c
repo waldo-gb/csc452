@@ -160,18 +160,34 @@ __attribute__((noreturn)) void quit_phase_1a(int status, int switchToPid) {
 int  getpid(void){
     return curr_pid;
 }
-
-void dumpProcesses(void){
-    printf("Dump Process");
-    for(int i=0; i<MAXPROC; i++){
-        if(table[i].pid!=-1){
-            printf("%5d %5s %5d %5d %5d\n", 
-            table[i].pid, 
-            table[i].name,
-            table[i].prio, 
-            table[i].status, 
-            table[i].state);
+void dumpProcesses() {
+    USLOSS_Console("**************** Calling dumpProcesses() *******************\n");
+    USLOSS_Console("- PID  PPID  NAME              PRIORITY  STATE\n");
+    for (int i = 0; i < MAXPROC; i++) {
+        if (table[i].pid == 0) continue;
+        char *str;
+        switch (table[i].state) {
+            case DEAD:
+                str = "Terminated";
+                break;
+            case BLOCKED:
+                str = "Blocked";
+                break;
+            case READY:
+                str = "Running";
+                break;
+            case RUNNING:
+                str = "Runnable";
+                break;
+            default:
+                str = "Unknown";
         }
+        USLOSS_Console("- %3d  %4d  %-15s  %8d  %s\n", 
+            table[i].pid, 
+            table[i].parent != NULL ? table[i].parent->pid : 0, // If no parent, PPID is 0
+            table[i].name, 
+            table[i].prio, 
+            str);
     }
 }
 void TEMP_switchTo(int pid){
