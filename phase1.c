@@ -85,20 +85,14 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             new->arg=arg;
             strcpy(new->name,name);
             //curr_pid=new->pid;
-            proc *par=&table[new->pid -2];
+            proc *par = curr_pcb;
             new->parent=par;
-            new->child = 0;
-            if(par->child==NULL) {
-                par->child= new;
-            } else {
-                struct proc*old=par->child;
-                struct proc*curr=old;
-                while(curr->younger!=NULL) {
-                    curr=curr->younger;
-                }
-                curr->younger=new;
-                new->older=curr;
-            }
+            new->child = NULL;
+            new->older = par->child;
+            if (par->child != NULL) par->child->younger = new;
+            par->child = new;
+            new->younger = NULL;
+        
             new->stack=malloc(USLOSS_MIN_STACK);
             USLOSS_ContextInit(&new->context,new->stack,USLOSS_MIN_STACK,NULL,trampoline);
             int p=new->prio-1;
@@ -110,7 +104,7 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
 }
 
 int join(int *status){
-    
+    //USLOSS_Console("Join Name: %s, PID: %d\n", &table[curr_pid-1].name, table[curr_pid-1].pid);
     if(status==NULL){
         return -3;
     }
@@ -122,22 +116,24 @@ int join(int *status){
             dead=child;
             break;
         }
-        child=child->younger;
+        child=child->older;
     }
     if(dead!=NULL) {
         *status=dead->exit_status;
-        if (dead->older!=NULL) {
-            dead->older->younger=dead->younger;
-        } else {
-            curr->child=dead->younger;
-        }
         if (dead->younger!=NULL) {
             dead->younger->older=dead->older;
+        } else {
+            curr->child=dead->older;
         }
-        return dead->pid;
+        if (dead->older!=NULL) {
+            dead->older->younger=dead->younger;
+        }
+        int id = dead->pid;
+        memset(&table[dead->pid - 1], 0, sizeof(proc));
+        return id;
     }
     if(curr->child!=0){
-        USLOSS_Console("curr->child = %d\n", curr->child->pid);
+        
         return -1;
     }
     return -2;
