@@ -180,11 +180,11 @@ void dumpProcesses() {
                 str="Runnable";
                 break;
             default:
-                str="Unknown";
+                str="SHOULDN'T BE HERE";
         }
         USLOSS_Console("- %3d  %4d  %-15s  %8d  %s\n", 
             table[i].pid, 
-            table[i].parent != NULL ? table[i].parent->pid : 0,
+            table[i].parent!=NULL ? table[i].parent->pid:0,
             table[i].name, 
             table[i].prio, 
             str);
