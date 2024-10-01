@@ -72,7 +72,7 @@ void trampoline() {
         curr = table[i].pid;
     }
     table[curr-1].startFunc(table[curr-1].arg);
-    quit_phase_1a(0, table[curr_pid - 1].parent->pid);
+    quit_phase_1a(table[curr_pid - 1].status, table[curr_pid - 1].parent->pid);
 }
 int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int priority) {
     int psr=USLOSS_PsrGet();
