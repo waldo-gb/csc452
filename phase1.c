@@ -63,8 +63,11 @@ int testcase_bounce(void*){
     return testcase_main();
 }
 void trampoline() {
-
     int curr=getpid();
+    int psr = USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_INT)==0) {
+        USLOSS_PsrSet(psr | USLOSS_PSR_CURRENT_INT);
+    }
     for(int i = curr; (i<=MAXPROC && table[i].pid!=0); i++){
         curr = table[i].pid;
     }
@@ -72,7 +75,17 @@ void trampoline() {
     quit_phase_1a(0, table[curr_pid - 1].parent->pid);
 }
 int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int priority) {
+    int psr=USLOSS_PsrGet();
+    if (!(psr & USLOSS_PSR_CURRENT_MODE)) {
+        USLOSS_Console("ERROR: Someone attempted to call spork while in user mode!\n");
+        USLOSS_Halt(1);
+    }
+    if (!(psr & USLOSS_PSR_CURRENT_INT)) {
+        USLOSS_Console("ERROR: It looks like you are running testcase_main() with interrupts disabled, instead of enabled. Fix that!\n");
+        USLOSS_Halt(1);
+    }
     if(stackSize<USLOSS_MIN_STACK){
+        USLOSS_PsrSet(psr);
         return -2;
     }
     for(int i=1; i<=MAXPROC; i++){
@@ -97,15 +110,22 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             USLOSS_ContextInit(&new->context,new->stack,USLOSS_MIN_STACK,NULL,trampoline);
             int p=new->prio-1;
             queue[p][queue_len[p]++]=new;
+            USLOSS_PsrSet(psr);
             return new->pid;
         }
     }
+    USLOSS_PsrSet(psr);
     return -1;
 }
 
 int join(int *status){
     //USLOSS_Console("Join Name: %s, PID: %d\n", &table[curr_pid-1].name, table[curr_pid-1].pid);
+    int psr=USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
+        USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
+    }
     if(status==NULL){
+        USLOSS_PsrSet(psr);
         return -3;
     }
     proc *curr=&table[curr_pid-1];
@@ -128,20 +148,42 @@ int join(int *status){
         if (dead->older!=NULL) {
             dead->older->younger=dead->younger;
         }
+        free(dead->stack);
         int id = dead->pid;
         memset(&table[dead->pid - 1], 0, sizeof(proc));
+        USLOSS_PsrSet(psr);
         return id;
     }
     if(curr->child!=0){
-        
+        USLOSS_PsrSet(psr);
         return -1;
     }
+    USLOSS_PsrSet(psr);
     return -2;
 }
 
 __attribute__((noreturn)) void quit_phase_1a(int status, int switchToPid) {
-    
+    int psr=USLOSS_PsrGet();
+    if (curr_pid<1 || curr_pid>MAXPROC || table[curr_pid-1].pid==0) {
+        USLOSS_Console("Error: Invalid process attempting to quit (PID: %d).\n",curr_pid);
+        USLOSS_Halt(1);
+    }
     proc *curr=&table[curr_pid-1];
+    if (!(psr & USLOSS_PSR_CURRENT_MODE)) {
+        USLOSS_Console("ERROR: Someone attempted to call quit_phase_1a while in user mode!\n");
+        USLOSS_Halt(1);
+    }
+    if (curr->state==DEAD) {
+        USLOSS_Console("Error: Process %d is already terminated.\n",curr->pid);
+        USLOSS_Halt(1);
+    }
+    if (curr->child!=NULL) {
+        USLOSS_Console("ERROR: Process pid %d called quit() while it still had children.\n",curr->pid);
+        USLOSS_Halt(1);
+    }
+    if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
+        USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
+    }
     curr->exit_status=status;
     curr->state=-2;
     int p=curr->prio-1;
@@ -174,10 +216,10 @@ void dumpProcesses() {
                 str="Blocked";
                 break;
             case READY:
-                str="Running";
+                str="Runnable";
                 break;
             case RUNNING:
-                str="Runnable";
+                str="Running";
                 break;
             default:
                 str="SHOULDN'T BE HERE";
@@ -193,12 +235,15 @@ void dumpProcesses() {
 void TEMP_switchTo(int pid){
     //USLOSS_Console("Name: %s, PID: %d\n", &table[curr_pid-1].name, table[curr_pid-1].pid);
     //USLOSS_Console("Name: %s, PID: %d\n", &table[pid-1].name, table[pid-1].pid);
+    int psr=USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
+        USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
+    }
     int old = curr_pid;
     curr_pid=pid;
     curr_pcb=&table[pid-1];
     USLOSS_ContextSwitch(&table[old-1].context,&table[pid-1].context);
-    
-    
+    USLOSS_PsrSet(psr | USLOSS_PSR_CURRENT_INT);
 }
 void phase1_init(void) {
     memset(table,0,sizeof(table));
@@ -221,6 +266,13 @@ void phase1_init(void) {
     phase3_start_service_processes();
     phase4_start_service_processes();
     phase5_start_service_processes();
+    int psr = USLOSS_PsrGet();
+    psr |= USLOSS_PSR_CURRENT_INT;
+    int rc = USLOSS_PsrSet(psr);
+    if (rc != USLOSS_ERR_OK) {
+        USLOSS_Console("ERROR: Failed to enable interrupts!\n");
+        USLOSS_Halt(1);
+    }
     int testcase=spork("testcase_main",testcase_bounce, NULL, USLOSS_MIN_STACK, 3);
     USLOSS_Console("Phase 1A TEMPORARY HACK: init() manually switching to testcase_main() after using spork() to create it.\n");
     TEMP_switchTo(testcase);
