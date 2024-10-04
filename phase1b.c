@@ -56,6 +56,8 @@ typedef struct proc{
     void *arg; 
     int exit_status;
     int time;
+    struct proc *zapped[MAXPROC];
+    int zap_count;
 } proc;
 
 struct proc table[MAXPROC];
@@ -112,11 +114,12 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             new->child=NULL;
             new->older=par->child;
             if (par->child!=NULL) par->child->younger=new;
-            par->child=new;
+            par->child=new; 
             new->younger=NULL;
             new->stack=malloc(USLOSS_MIN_STACK);
             USLOSS_ContextInit(&new->context,new->stack,USLOSS_MIN_STACK,NULL,trampoline);
             new->time=0;
+            new->state=0;
             int p=new->prio-1;
             queue[p][queue_len[p]++]=new;
             if (new->prio<table[curr_pid-1].prio) {
@@ -204,7 +207,7 @@ __attribute__((noreturn)) void quit(int status) {
     int psr=USLOSS_PsrGet();
     proc *curr=&table[curr_pid-1];
     if (!(psr & USLOSS_PSR_CURRENT_MODE)) {
-        USLOSS_Console("ERROR: Someone attempted to call quit_phase_1a while in user mode!\n");
+        USLOSS_Console("ERROR: Someone attempted to call quit while in user mode!\n");
         USLOSS_Halt(1);
     }
     if (curr->state==DEAD) {
@@ -217,16 +220,6 @@ __attribute__((noreturn)) void quit(int status) {
     }
     if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
         USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
-    }
-     if (curr->child != NULL) {
-        proc *child = curr->child;
-        while (child != NULL) {
-            if (child->state != DEAD) {
-                USLOSS_Console("Error: Process %d tried to quit without joining all of its children.\n", curr->pid);
-                USLOSS_Halt(1);
-            }
-            child = child->older;
-        }
     }
     curr->exit_status=status;
     curr->state=-2;
@@ -252,16 +245,34 @@ __attribute__((noreturn)) void quit(int status) {
             queue[zapper_prio][queue_len[zapper_prio]++]=&table[i];
         }
     }
+    for (int i = 0; i < curr->zap_count; i++) {
+        table[curr->zapped[i]->pid-1].state = READY;
+    }
+    USLOSS_PsrSet(psr);
     dispatcher();
 }
 
 void zap(int pid) {
-    if (pid==curr_pid || pid==1 || table[pid-1].pid==0 || table[pid-1].state==DEAD) {
-        USLOSS_Console("Error: Cannot zap PID %d.\n", pid);
+    if (pid<=0 || pid>MAXPROC || table[pid-1].pid==0) {
+        USLOSS_Console("ERROR: Attempt to zap() a non-existent process.\n");
         USLOSS_Halt(1);
     }
-    curr_pcb->state=BLOCKED;
+    if (pid==curr_pid){
+        USLOSS_Console("ERROR: Attempt to zap() itself.\n");
+        USLOSS_Halt(1);
+    }
+    if(table[pid-1].state==DEAD){
+        USLOSS_Console("ERROR:  Attempt to zap() a process that is already in the process of dying.\n");
+        USLOSS_Halt(1);
+    }
+    if(pid==1) {
+        USLOSS_Console("ERROR: Attempt to zap() init.\n");
+        USLOSS_Halt(1);
+    }
+
     struct proc *target=&table[pid-1];
+    target->zapped[target->zap_count++]=&table[curr_pid-1];
+    curr_pcb->state=BLOCKED;
     while (target->state!=DEAD) {
         dispatcher();
     }
@@ -273,18 +284,28 @@ int  getpid(void){
 }
 
 void blockMe(void) {
+    int psr=USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
+        USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
+    }
     table[curr_pid-1].state=BLOCKED;
     dispatcher();
+    USLOSS_PsrSet(psr);
 }
 
 int unblockProc(int pid) {
+    int psr=USLOSS_PsrGet();
+    if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
+        USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
+    }
     if (pid<1 || pid>MAXPROC || table[pid-1].state!=BLOCKED || table[pid-1].status<=10) {
         return -2;
     }
-    table[pid-1].state = READY;
+    table[pid-1].state=0;
     int prio=table[pid-1].prio-1;
     queue[prio][queue_len[prio]++]=&table[pid-1];
     dispatcher();
+    USLOSS_PsrSet(psr);
     return 0;
 }
 
@@ -326,9 +347,9 @@ void swapTo(int pid){
     if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
         USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
     }
-    if(table[curr_pid - 1].state!=-2) {
-        table[curr_pid - 1].state=0;
-        table[curr_pid - 1].time=0;
+    if(curr_pid!=-1 && table[curr_pid - 1].state!=-2) {
+        table[curr_pid-1].state=0;
+        table[curr_pid-1].time=0;
     }
     int old=curr_pid;
     curr_pid=pid;
@@ -346,7 +367,7 @@ void dispatcher(void) {
             if (curr_pid!=-1 && table[curr_pid-1].prio-1==j && table[curr_pid-1].time>=80) {
                 table[curr_pid-1].time=0;
                 struct proc *temp=queue[j][0];
-                for(int i=0;i<queue_len[j]-1;i++) {
+                for(int i=0;i<queue_len[j]-1;i++) { 
                     queue[j][i]=queue[j][i+1];
                 }
                 queue[j][queue_len[j]-1]=temp;
@@ -366,7 +387,7 @@ void dispatcher(void) {
             }
             if (curr!=NULL && curr->state==READY) {
                 swapTo(curr->pid);
-                end = 1;
+                end=1;
                 break; 
             }
         }
@@ -376,10 +397,6 @@ void dispatcher(void) {
     }
 }
 
-//int currentTime(void) {
-    //time_t curr=time(NULL);
-    //return (int)curr;
-//}
 void phase1_init(void) {
     memset(table,0,sizeof(table));
     memset(queue_len,0,sizeof(queue_len));
