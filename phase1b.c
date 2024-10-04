@@ -55,11 +55,12 @@ typedef struct proc{
     int (*startFunc)(void*);
     void *arg; 
     int exit_status;
+    int time;
 } proc;
 
 struct proc table[MAXPROC];
-struct proc *queue[6][MAXPROC];
-int queue_len[6];
+struct proc *queue[5][MAXPROC];
+int queue_len[5];
 int curr_pid=-1;
 struct proc *curr_pcb=NULL;
 
@@ -67,17 +68,13 @@ int testcase_bounce(void*){
     return testcase_main();
 }
 
-void trampoline() {
-    int curr=getpid();
-    for(int i = curr; (i<=MAXPROC && table[i].pid!=0); i++){
-        curr = table[i].pid;
-    }
+void trampoline(){
     int psr = USLOSS_PsrGet();
     if ((psr & USLOSS_PSR_CURRENT_INT)==0) {
         USLOSS_PsrSet(psr | USLOSS_PSR_CURRENT_INT);
     }
-    table[curr-1].startFunc(table[curr-1].arg);
-    quit(table[curr_pid - 1].status);
+    table[curr_pid-1].startFunc(table[curr_pid-1].arg);
+    quit(table[curr_pid-1].status);
 }
 
 int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int priority) {
@@ -97,11 +94,11 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
         USLOSS_PsrSet(psr);
         return -2;
     }
-    if (priority<1 || priority>6) {
+    if (priority<1 || priority>5) {
         USLOSS_PsrSet(psr);
         return -1;
     }
-    for(int i=1; i<=MAXPROC; i++){
+    for(int i=1; i<MAXPROC; i++){
         if(table[i].pid==0){
             struct proc *new=&table[i];
             new->pid=i+1;
@@ -119,9 +116,10 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
             new->younger=NULL;
             new->stack=malloc(USLOSS_MIN_STACK);
             USLOSS_ContextInit(&new->context,new->stack,USLOSS_MIN_STACK,NULL,trampoline);
+            new->time=0;
             int p=new->prio-1;
             queue[p][queue_len[p]++]=new;
-            if (new->prio<curr_pcb->prio) {
+            if (new->prio<table[curr_pid-1].prio) {
                 dispatcher();
             }
             USLOSS_PsrSet(psr);
@@ -134,7 +132,7 @@ int spork(char *name, int (*startFunc)(void*), void *arg, int stackSize, int pri
 
 int join(int *status){
     //USLOSS_Console("Join Name: %s, PID: %d\n", &table[curr_pid-1].name, table[curr_pid-1].pid);
-     int psr=USLOSS_PsrGet();
+    int psr=USLOSS_PsrGet();
     if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
         USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
     }
@@ -163,7 +161,7 @@ int join(int *status){
             dead->older->younger=dead->younger;
         }
         free(dead->stack);
-        int id = dead->pid;
+        int id=dead->pid;
         memset(&table[dead->pid - 1], 0, sizeof(proc));
         USLOSS_PsrSet(psr);
         return id;
@@ -172,7 +170,7 @@ int join(int *status){
         USLOSS_PsrSet(psr);
         return -2;
     }
-    curr->state=-2;
+    curr->state=-1;
     dispatcher();
     child=curr->child;
     while (child!=NULL) {
@@ -181,6 +179,22 @@ int join(int *status){
             break;
         }
         child=child->older;
+    }
+    if(dead!=NULL) {
+        *status=dead->exit_status;
+        if (dead->younger!=NULL) {
+            dead->younger->older=dead->older;
+        } else {
+            curr->child=dead->older;
+        }
+        if (dead->older!=NULL) {
+            dead->older->younger=dead->younger;
+        }
+        free(dead->stack);
+        int id=dead->pid;
+        memset(&table[dead->pid - 1], 0, sizeof(proc));
+        USLOSS_PsrSet(psr);
+        return id;
     }
     USLOSS_PsrSet(psr);
     return -1;
@@ -204,7 +218,7 @@ __attribute__((noreturn)) void quit(int status) {
     if ((psr & USLOSS_PSR_CURRENT_INT)!=0) {
         USLOSS_PsrSet(psr & ~USLOSS_PSR_CURRENT_INT);
     }
-    if (curr->child != NULL) {
+     if (curr->child != NULL) {
         proc *child = curr->child;
         while (child != NULL) {
             if (child->state != DEAD) {
@@ -225,15 +239,15 @@ __attribute__((noreturn)) void quit(int status) {
             queue_len[p]--;
             break;
         }
-    }   
+    } 
     if (curr->parent!=NULL && curr->parent->state==-1) {
         curr->parent->state=0;
-        int parent_prio=curr->parent->prio-1;
-        queue[parent_prio][queue_len[parent_prio]++]=curr->parent;
+        int p_prio=curr->parent->prio - 1;
+        queue[p_prio][queue_len[p_prio]++]=curr->parent;
     }
     for (int i=0;i<MAXPROC;i++) {
-        if (table[i].state==BLOCKED && table[i].status==-2) {
-            table[i].state=READY;
+        if (table[i].state==-1 && table[i].status==-2) {
+            table[i].state=0;
             int zapper_prio=table[i].prio-1;
             queue[zapper_prio][queue_len[zapper_prio]++]=&table[i];
         }
@@ -259,7 +273,7 @@ int  getpid(void){
 }
 
 void blockMe(void) {
-    table[curr_pid - 1].state=BLOCKED;
+    table[curr_pid-1].state=BLOCKED;
     dispatcher();
 }
 
@@ -314,31 +328,50 @@ void swapTo(int pid){
     }
     if(table[curr_pid - 1].state!=-2) {
         table[curr_pid - 1].state=0;
+        table[curr_pid - 1].time=0;
     }
-    int old = curr_pid;
+    int old=curr_pid;
     curr_pid=pid;
     curr_pcb=&table[pid-1];
-    table[pid - 1].state=1;
+    curr_pcb->state=1;
     USLOSS_ContextSwitch(&table[old-1].context,&table[pid-1].context);
     USLOSS_PsrSet(psr | USLOSS_PSR_CURRENT_INT);
 }
 
 void dispatcher(void) {
     int end=0;
-    for (int j=0;j<6;j++) {
-        for (int i=0;i<queue_len[j];i++) {
-            if (queue[j][i]->state==0) {
-                swapTo(queue[j][i]->pid);
-                end=1;
-                break;
+    for (int j=0;j<5;j++) {
+        if (queue_len[j]>0) {
+            struct proc *curr=queue[j][0];
+            if (curr_pid!=-1 && table[curr_pid-1].prio-1==j && table[curr_pid-1].time>=80) {
+                table[curr_pid-1].time=0;
+                struct proc *temp=queue[j][0];
+                for(int i=0;i<queue_len[j]-1;i++) {
+                    queue[j][i]=queue[j][i+1];
+                }
+                queue[j][queue_len[j]-1]=temp;
+                curr=queue[j][0];
             }
-        }
-        if (end==1){
-            break;
+            while(curr!=NULL && curr->state!=READY) {
+                struct proc *blocked_proc=queue[j][0];
+                for (int i=0;i<queue_len[j]-1;i++) {
+                    queue[j][i]=queue[j][i+1];
+                }
+                queue[j][queue_len[j]-1]=blocked_proc;
+                curr=queue[j][0];
+                if (curr==blocked_proc) {
+                    curr=NULL;
+                    break;
+                }
+            }
+            if (curr!=NULL && curr->state==READY) {
+                swapTo(curr->pid);
+                end = 1;
+                break; 
+            }
         }
     }
     if (end==0) {
-        USLOSS_Console("Error\n");
         USLOSS_Halt(1);
     }
 }
@@ -350,7 +383,7 @@ void dispatcher(void) {
 void phase1_init(void) {
     memset(table,0,sizeof(table));
     memset(queue_len,0,sizeof(queue_len));
-    for(int i=0; i<=MAXPROC; i++){
+    for(int i=0; i<MAXPROC; i++){
         memset(&table[i],0,sizeof(proc));
     }
     curr_pid=1;
@@ -366,8 +399,6 @@ void phase1_init(void) {
     table[0].older=NULL;
     table[0].younger=NULL;
     USLOSS_ContextInit(&table[0].context,table[0].stack, USLOSS_MIN_STACK, NULL, trampoline);
-    int priority=table[0].prio-1;
-    queue[priority][queue_len[priority]++]=&table[0];
     swapTo(1);
     phase2_start_service_processes();
     phase3_start_service_processes();
@@ -382,8 +413,9 @@ void phase1_init(void) {
     }
     int testcase=spork("testcase_main",testcase_bounce, NULL, USLOSS_MIN_STACK, 3);
     int i=1;
+    int status;
     while(1){
-        int join_val=join(&table[i].status);
+        int join_val=join(&status);
         if(join_val==-2){
             USLOSS_Halt(0);
             break;
