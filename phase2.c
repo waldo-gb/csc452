@@ -27,7 +27,7 @@ typedef struct mailbox {
     int slots;
     int slot_size;
     int destroy;
-    int msg_count;
+    int msg_count;  
     void *messages[MAXSLOTS];
     int blockedSenders[10];
     int blockedSenderCount;
@@ -40,18 +40,56 @@ typedef struct mail_slot{
     char message[MAX_MESSAGE];
 } mail_slot;
 
+int clockMailbox;
+int diskMailboxes[2];
+int terminalMailboxes[4];
+
+
 int interruptMailboxes[7];
 mailbox mail[MAXMBOX];
 mail_slot slots[MAXSLOTS];
 proc table[MAX_PROC];
 int total_used=0;
+int lastClockTick=0;
 
 void nullsys(USLOSS_Sysargs *args) {
     USLOSS_Console("Error: Invalid system call\n");
     USLOSS_Halt(1);
 }
 void clockHandler(int type, void *arg) {
-    int status=0;
+    int status;
+    int curr;
+    USLOSS_DeviceInput(USLOSS_CLOCK_DEV, 0, &curr);
+    if (curr-lastClockTick>=100) {
+        lastClockTick=curr; 
+        status=curr;
+        MboxCondSend(clockMailbox, &status, sizeof(int));
+    }
+    dispatcher();
+}
+void diskHandler(int type, void *arg) {
+    int unit=(int)arg;
+    int status;
+    if (unit >= 0 && unit < 2) {
+        USLOSS_DeviceInput(USLOSS_DISK_DEV, unit, &status);
+        MboxSend(diskMailboxes[unit], &status, sizeof(int));
+    }
+}
+void terminalHandler(int type, void *arg) {
+    int unit =(int)arg;
+    int status;
+    if (unit>=0 && unit<2) {
+        USLOSS_DeviceInput(USLOSS_TERM_DEV, unit, &status);
+        MboxSend(terminalMailboxes[unit], &status, sizeof(int));
+    }
+}
+void syscallHandler(int type, void *arg) {
+    USLOSS_Sysargs *sysargs=(USLOSS_Sysargs *)arg;
+    if (sysargs->number < 0 || sysargs->number >= MAX_SYSCALLS) {
+        USLOSS_Console("Error: Invalid syscall number %d\n", sysargs->number);
+        USLOSS_Halt(1);
+    }
+    (*systemCallVec[sysargs->number])(sysargs);
 }
 void phase2_init(void) {
     for (int i=0; i<MAX_SYSCALLS; i++) {
@@ -60,12 +98,17 @@ void phase2_init(void) {
     memset(mail,0,sizeof(mail));
     memset(slots,0,sizeof(slots));
     memset(table,0,sizeof(table));
+    clockMailbox=MboxCreate(1, sizeof(int));
+    diskMailboxes[0]=MboxCreate(1, sizeof(int));
+    diskMailboxes[1]=MboxCreate(1, sizeof(int));
+    terminalMailboxes[0]=MboxCreate(1, sizeof(int));
+    terminalMailboxes[1]=MboxCreate(1, sizeof(int));
+    terminalMailboxes[2]=MboxCreate(1, sizeof(int));
+    terminalMailboxes[3]=MboxCreate(1, sizeof(int));
     USLOSS_IntVec[USLOSS_CLOCK_INT]=clockHandler;
-    for (int i=0; i<7; i++) {
-        interruptMailboxes[i]=MboxCreate(10, sizeof(int));
-        total_used++;
-    }
-
+    USLOSS_IntVec[USLOSS_DISK_INT]=diskHandler;
+    USLOSS_IntVec[USLOSS_TERM_INT]=terminalHandler;
+    USLOSS_IntVec[USLOSS_SYSCALL_INT]=syscallHandler;
 }
 
 void phase2_start_service_processes(void){
@@ -123,6 +166,7 @@ int MboxRelease(int mbox_id){
         mail[mbox_id].blockedReceivers[i]=NULL;
         unblockProc(receiver_pid);
     }
+    dispatcher();
     mail[mbox_id].inUse=0;
     return 0;
 }       
@@ -173,8 +217,7 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size){
         }
     }
     if (total_used>= MAXSLOTS) {
-        USLOSS_Console("No slots available: mailbox %d and slot %d\n", mbox_id, mail[mbox_id].msg_count);
-        return -1;
+        return -2;
     } 
     while (mail[mbox_id].msg_count>=mail[mbox_id].slots) {
         int current_pid=getpid();
@@ -194,23 +237,22 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size){
         }
     }
     if (slotID==-1) {
-        USLOSS_Console("start2(): No slots available: mailbox %d and slot %d\n", mbox_id, mail[mbox_id].msg_count);
-        return -1;
+        return -2;
     }
     slots[slotID].inUse=1;
     memcpy(slots[slotID].message, msg_ptr, msg_size);
     mail[mbox_id].messages[mail[mbox_id].msg_count++]=slots[slotID].message;
+    total_used++;
     if (mail[mbox_id].blockedReceiverCount>0) {
         int receiver_pid=mail[mbox_id].blockedReceivers[--mail[mbox_id].blockedReceiverCount];
         unblockProc(receiver_pid);
     }
-    total_used++;
     return 0;
 }
 
 // returns size of received msg if successful, -1 if invalid args
 int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
-    if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse || msg_ptr==NULL) {
+    if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse) {
         return -1;
     }
     if (mail[mbox_id].destroy) {
@@ -256,6 +298,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
             mail[mbox_id].messages[i-1]=mail[mbox_id].messages[i];
         }
         mail[mbox_id].msg_count--;
+        total_used--;
         if(mail[mbox_id].blockedSenderCount>0) {
             int sender_pid=mail[mbox_id].blockedSenders[0];
             mail[mbox_id].blockedSenderCount--;
@@ -310,8 +353,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size){
         }
     }
     if (total_used>= MAXSLOTS) {
-        USLOSS_Console("No slots available: mailbox %d and slot %d\n", mbox_id, mail[mbox_id].msg_count);
-        return -1;
+        return -2;
     } 
     while (mail[mbox_id].msg_count>=mail[mbox_id].slots) {
         return -2;
@@ -339,7 +381,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size){
 
 // returns 0 if successful, 1 if no msg available, -1 if illegal args
 int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size){
-    if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse || msg_ptr==NULL) {
+    if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse) {
         return -1;
     }
     if (mail[mbox_id].destroy) {
@@ -390,26 +432,17 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size){
 extern void waitDevice(int type, int unit, int *status) {
     int mailboxID=-1;
     switch (type) {
-        case 0:
-            if (unit!=0) {
-                mailboxID=-1;
-            }
-            mailboxID=0;
+        case USLOSS_CLOCK_DEV:
+            mailboxID=clockMailbox;
             break;
-        case 1:
-            if (unit==0) {
-                mailboxID=1;
-            } else if (unit==1) {
-                mailboxID=2;
-            } else {
-                mailboxID=-1;
+        case USLOSS_DISK_DEV:
+            if (unit>=0 && unit<2) {
+                mailboxID=diskMailboxes[unit];
             }
             break;
-        case 2:
-            if (unit>=0 && unit<=3) {
-                mailboxID=3 + unit;
-            } else {
-                mailboxID=-1;
+        case USLOSS_TERM_DEV:
+            if (unit>=0 && unit<4) {
+                mailboxID=terminalMailboxes[unit];
             }
             break;
         default:
@@ -430,26 +463,17 @@ extern void waitDevice(int type, int unit, int *status) {
 void wakeupByDevice(int type, int unit, int status){
     int mailboxID=-1;
     switch (type) {
-        case 0:
-            if (unit!=0) {
-                mailboxID=-1;
-            }
-            mailboxID=0;
+        case USLOSS_CLOCK_DEV:
+            mailboxID=clockMailbox;
             break;
-        case 1:
-            if (unit==0) {
-                mailboxID=1;
-            } else if (unit==1) {
-                mailboxID=2;
-            } else {
-                mailboxID=-1;
+        case USLOSS_DISK_DEV:
+            if (unit>=0 && unit<2) {
+                mailboxID=diskMailboxes[unit];
             }
             break;
-        case 2:
-            if (unit>=0 && unit<=3) {
-                mailboxID=3 + unit;
-            } else {
-                mailboxID=-1;
+        case USLOSS_TERM_DEV:
+            if (unit>=0 && unit<4) {
+                mailboxID=terminalMailboxes[unit];
             }
             break;
         default:
