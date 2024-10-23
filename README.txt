@@ -24,7 +24,7 @@ and how they terminate and how the joins in the testcase are called. Instead of 
 their two joins being called, ours does it in order. This difference is not forbidden by the spec and all of the other
 spec requirments and testcases goals are met by this output.
 
-Testcase 46: Testcase 46: Similar to the ones above, the difference we have in the testcase is with the joins being called after the 
+Testcase 46: Similar to the ones above, the difference we have in the testcase is with the joins being called after the 
 results of Child1a and Child1b are reported. Our implementation has the report happen and the the respective join be called
 while the offical output has a and b report and then the respective joins happen. This difference is not specified in the 
 spec and our output matches all other parts of this testcase.
