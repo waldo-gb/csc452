@@ -9,7 +9,7 @@
 #define MAXSLOTS        2500
 #define MAX_MESSAGE     150
 #define MAX_PROC        100
-#define MAX_SYSCALLS     100
+#define MAX_SYSCALLS     50
 
 void (*systemCallVec[MAX_SYSCALLS])(USLOSS_Sysargs *args);
 
@@ -53,7 +53,8 @@ int total_used=0;
 int lastClockTick=0;
 
 void nullsys(USLOSS_Sysargs *args) {
-    USLOSS_Console("Error: Invalid system call\n");
+    int psr=USLOSS_PsrGet();
+    USLOSS_Console("nullsys(): Program called an unimplemented syscall. syscall no: %d   PSR: 0x%02x\n", args->number, psr);
     USLOSS_Halt(1);
 }
 void clockHandler(int type, void *arg) {
@@ -86,7 +87,7 @@ void terminalHandler(int type, void *arg) {
 void syscallHandler(int type, void *arg) {
     USLOSS_Sysargs *sysargs=(USLOSS_Sysargs *)arg;
     if (sysargs->number < 0 || sysargs->number >= MAX_SYSCALLS) {
-        USLOSS_Console("Error: Invalid syscall number %d\n", sysargs->number);
+        USLOSS_Console("syscallHandler(): Invalid syscall number %d\n", sysargs->number);
         USLOSS_Halt(1);
     }
     (*systemCallVec[sysargs->number])(sysargs);
@@ -117,7 +118,7 @@ void phase2_start_service_processes(void){
 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
 int MboxCreate(int slots, int slot_size){
-    if (slots<0 || slot_size<0 || slot_size>MAXSLOTS) {
+    if (slots<0 || slot_size<0 || slot_size>MAX_MESSAGE || slots>MAXSLOTS) {
         return -1;
     }
     int mboxID=-1;
@@ -166,7 +167,6 @@ int MboxRelease(int mbox_id){
         mail[mbox_id].blockedReceivers[i]=NULL;
         unblockProc(receiver_pid);
     }
-    dispatcher();
     mail[mbox_id].inUse=0;
     return 0;
 }       
@@ -299,16 +299,19 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
         }
         mail[mbox_id].msg_count--;
         total_used--;
+        for (int i=0; i<MAXSLOTS; i++) {
+            if (slots[i].inUse && strcmp(slots[i].message, msg) == 0) {
+                slots[i].inUse=0;
+                break;
+            }
+        }
         if(mail[mbox_id].blockedSenderCount>0) {
             int sender_pid=mail[mbox_id].blockedSenders[0];
-            mail[mbox_id].blockedSenderCount--;
-            int i=1;
-            while(i<=mail[mbox_id].blockedSenderCount){
+            for (int i=1; i<mail[mbox_id].blockedSenderCount; i++) {
                 mail[mbox_id].blockedSenders[i-1]=mail[mbox_id].blockedSenders[i];
-                i++;
             }
-            mail[mbox_id].blockedSenders[i]=NULL;
-            unblockProc(sender_pid);
+            mail[mbox_id].blockedSenderCount--;
+            unblockProc(sender_pid);;
         }
         return msgSize;
     }
