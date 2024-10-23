@@ -1,3 +1,9 @@
+/*
+* Authors: Connor O'Neill and Waldo Guzman
+* File: phase2.c
+* This is used to simulate a mailbox system in a Operating System
+* With the goal of showing how interprocess communication works 
+*/
 #include <usyscall.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +19,7 @@
 
 void (*systemCallVec[MAX_SYSCALLS])(USLOSS_Sysargs *args);
 
+//This is a phantom struct to keep track of important details about a process
 typedef struct proc{
     int pid;
     int blocked;
@@ -22,6 +29,7 @@ typedef struct proc{
     int status;
 } proc;
 
+//This is a struct to simulate a mailbox that contains various messages
 typedef struct mailbox {
     int inUse;
     int slots;
@@ -35,39 +43,47 @@ typedef struct mailbox {
     int blockedReceiverCount;
 } mailbox;
 
+//This is a struct for a mail slot within a mail box
 typedef struct mail_slot{
     int inUse;
     char message[MAX_MESSAGE];
 } mail_slot;
 
+//global variables for the interrupt mailboxes
 int clockMailbox;
 int diskMailboxes[2];
 int terminalMailboxes[4];
 
-
-int interruptMailboxes[7];
+//instances of the structs
 mailbox mail[MAXMBOX];
 mail_slot slots[MAXSLOTS];
 proc table[MAX_PROC];
+
+//variables to track time and slots
 int total_used=0;
 int lastClockTick=0;
 
+//nullsys to have as an inital value for syscalls
 void nullsys(USLOSS_Sysargs *args) {
     int psr=USLOSS_PsrGet();
     USLOSS_Console("nullsys(): Program called an unimplemented syscall. syscall no: %d   PSR: 0x%02x\n", args->number, psr);
     USLOSS_Halt(1);
 }
+
+//handles the clock interrupts
 void clockHandler(int type, void *arg) {
     int status;
     int curr;
     USLOSS_DeviceInput(USLOSS_CLOCK_DEV, 0, &curr);
-    if (curr-lastClockTick>=100) {
+    if (lastClockTick==0 || curr-lastClockTick>=100) {
         lastClockTick=curr; 
         status=curr;
         MboxCondSend(clockMailbox, &status, sizeof(int));
     }
     dispatcher();
 }
+
+//handles the disk interrupts
 void diskHandler(int type, void *arg) {
     int unit=(int)arg;
     int status;
@@ -76,14 +92,18 @@ void diskHandler(int type, void *arg) {
         MboxSend(diskMailboxes[unit], &status, sizeof(int));
     }
 }
+
+//handles the terminal interrupts
 void terminalHandler(int type, void *arg) {
     int unit =(int)arg;
     int status;
-    if (unit>=0 && unit<2) {
+    if (unit>=0 && unit<4) {
         USLOSS_DeviceInput(USLOSS_TERM_DEV, unit, &status);
         MboxSend(terminalMailboxes[unit], &status, sizeof(int));
     }
 }
+
+//handles syscalls
 void syscallHandler(int type, void *arg) {
     USLOSS_Sysargs *sysargs=(USLOSS_Sysargs *)arg;
     if (sysargs->number < 0 || sysargs->number >= MAX_SYSCALLS) {
@@ -92,6 +112,8 @@ void syscallHandler(int type, void *arg) {
     }
     (*systemCallVec[sysargs->number])(sysargs);
 }
+
+//initialises the sysCall vec, interrupt mailboxes, instances of the structs, and the USLOSS handlers
 void phase2_init(void) {
     for (int i=0; i<MAX_SYSCALLS; i++) {
         systemCallVec[i]=nullsys;
@@ -110,12 +132,15 @@ void phase2_init(void) {
     USLOSS_IntVec[USLOSS_DISK_INT]=diskHandler;
     USLOSS_IntVec[USLOSS_TERM_INT]=terminalHandler;
     USLOSS_IntVec[USLOSS_SYSCALL_INT]=syscallHandler;
+    USLOSS_DeviceInput(USLOSS_CLOCK_DEV, 0, &lastClockTick);
 }
 
+//nothing here yet but it would be the start services
 void phase2_start_service_processes(void){
     
 }
 
+// creates and initilizes a mailbox 
 // returns id of mailbox, or -1 if no more mailboxes, or -1 if invalid args
 int MboxCreate(int slots, int slot_size){
     if (slots<0 || slot_size<0 || slot_size>MAX_MESSAGE || slots>MAXSLOTS) {
@@ -139,6 +164,7 @@ int MboxCreate(int slots, int slot_size){
     return mboxID;
 }
 
+// releases a mailbox and clears its data and queues
 // returns 0 if successful, -1 if invalid arg
 int MboxRelease(int mbox_id){
     if(mbox_id<0||mbox_id>=MAXMBOX||!mail[mbox_id].inUse){
@@ -171,6 +197,7 @@ int MboxRelease(int mbox_id){
     return 0;
 }       
 
+// sends a message to another mailbox
 // returns 0 if successful, -1 if invalid args
 int MboxSend(int mbox_id, void *msg_ptr, int msg_size){
     if (mbox_id<0 || mbox_id >= MAXMBOX || !mail[mbox_id].inUse || msg_size>mail[mbox_id].slot_size || (msg_size>0 && msg_ptr==NULL)) {
@@ -250,6 +277,7 @@ int MboxSend(int mbox_id, void *msg_ptr, int msg_size){
     return 0;
 }
 
+// recieves a sent message from another mailbox
 // returns size of received msg if successful, -1 if invalid args
 int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
     if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse) {
@@ -257,6 +285,19 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
     }
     if (mail[mbox_id].destroy) {
         return -1;
+    }
+     if (msg_max_size==0 && msg_ptr==NULL && mail[mbox_id].msg_count>0) {
+        mail[mbox_id].msg_count--;
+        total_used--;
+        if (mail[mbox_id].blockedSenderCount>0) {
+            int sender_pid=mail[mbox_id].blockedSenders[0];
+            for (int i=1; i < mail[mbox_id].blockedSenderCount; i++) {
+                mail[mbox_id].blockedSenders[i - 1]=mail[mbox_id].blockedSenders[i];
+            }
+            mail[mbox_id].blockedSenderCount--;
+            unblockProc(sender_pid);
+        }
+        return msg_max_size;
     }
     if (mail[mbox_id].slots==0) {
         if (mail[mbox_id].blockedSenderCount>0) {
@@ -300,7 +341,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
         mail[mbox_id].msg_count--;
         total_used--;
         for (int i=0; i<MAXSLOTS; i++) {
-            if (slots[i].inUse && strcmp(slots[i].message, msg) == 0) {
+            if (slots[i].inUse && strcmp(slots[i].message, msg)==0) {
                 slots[i].inUse=0;
                 break;
             }
@@ -330,6 +371,7 @@ int MboxRecv(int mbox_id, void *msg_ptr, int msg_max_size){
     return table[current_pid].msg_size;
 }
 
+// sends a message but returns -2 instead of blocking
 // returns 0 if successful, 1 if mailbox full, -1 if illegal args
 int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size){
     if (mbox_id<0 || mbox_id >= MAXMBOX || !mail[mbox_id].inUse || msg_size>mail[mbox_id].slot_size || (msg_size>0 && msg_ptr==NULL)) {
@@ -382,6 +424,7 @@ int MboxCondSend(int mbox_id, void *msg_ptr, int msg_size){
     return 0;
 }
 
+// recieves a message but returns -2 instead of blocking
 // returns 0 if successful, 1 if no msg available, -1 if illegal args
 int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size){
     if (mbox_id<0 || mbox_id>=MAXMBOX || !mail[mbox_id].inUse) {
@@ -430,8 +473,7 @@ int MboxCondRecv(int mbox_id, void *msg_ptr, int msg_max_size){
     return msgSize;
 }
 
-// type = interrupt device type, unit = # of device (when more than one),
-// status = where interrupt handler puts device's status register.
+// gathers the device status from the different devices and then receives a message from the desired mailbox
 extern void waitDevice(int type, int unit, int *status) {
     int mailboxID=-1;
     switch (type) {
@@ -461,8 +503,9 @@ extern void waitDevice(int type, int unit, int *status) {
         USLOSS_Console("Error: Failed to receive device status from mailbox %d\n", mailboxID);
         USLOSS_Halt(1);
     }
-    *status=rec_status;
 }
+
+//wakes up a given device by sending a message
 void wakeupByDevice(int type, int unit, int status){
     int mailboxID=-1;
     switch (type) {
@@ -494,5 +537,3 @@ void wakeupByDevice(int type, int unit, int status){
     }
     status=send_status;
 }
-// 
-extern void (*systemCallVec[])(USLOSS_Sysargs *args);
