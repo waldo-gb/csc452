@@ -1,3 +1,9 @@
+/*
+* Authors: Connor O'Neill and Waldo Guzman
+* File: phase3.c
+* This is used to simulate the syscall handing processes
+* in the kernel to allow user code to operate smoothly
+*/
 #include "phase3.h"
 #include "usloss.h"
 #include "usyscall.h"
@@ -5,11 +11,11 @@
 #include <stdlib.h>
 
 #define MAXSEMS         200
-#define MAX_PROCESSES   100
 #define MAX_SYSCALLS    50
 
 extern void (*systemCallVec[MAX_SYSCALLS])(USLOSS_Sysargs *args);
 
+//struct that represents a semaphore
 typedef struct Semaphore{
     int value;
     int is_valid;
@@ -17,8 +23,15 @@ typedef struct Semaphore{
     int cond;
 } Semaphore;
 
+//struct that represents the arguments to the trampoline function
+typedef struct trampoline{
+    int (*func)(void *);
+    void *arg;
+} trampoline;
+
 Semaphore semaphore_table[MAXSEMS];
 
+//inital calls for functions
 void bounce(void *arg);
 void syscall_spawn_handler(USLOSS_Sysargs *args);
 void syscall_wait_handler(USLOSS_Sysargs *args);
@@ -29,10 +42,12 @@ void syscall_semv_handler(USLOSS_Sysargs *args);
 void syscall_gettimeofday_handler(USLOSS_Sysargs *args);
 void syscall_getpid_handler(USLOSS_Sysargs *args);
 
+//nothing here but would be the startup code
 void phase3_start_service_processes() {
     
 }
 
+//initilizes all of the syscall handlers
 void phase3_init(void) {
     systemCallVec[SYS_SPAWN]=syscall_spawn_handler;
     systemCallVec[SYS_WAIT]=syscall_wait_handler;
@@ -44,7 +59,7 @@ void phase3_init(void) {
     systemCallVec[SYS_GETPID]=syscall_getpid_handler;
 }
 
-
+//handles when the user code has a syscall spawn call
 void syscall_spawn_handler(USLOSS_Sysargs *args) {
     char *name=(char *) args->arg5;
     int (*func)(void *)=(int (*)(void *)) args->arg1;
@@ -63,6 +78,7 @@ void syscall_spawn_handler(USLOSS_Sysargs *args) {
     args->arg4 = (void *) (long) result;
 }
 
+//handles when the user code has a syscall wait call
 void syscall_wait_handler(USLOSS_Sysargs *args) {
     int pid, status;
     int result=kernel_Wait(&pid, &status);
@@ -80,11 +96,13 @@ void syscall_wait_handler(USLOSS_Sysargs *args) {
     }
 }
 
+//handles when the user code has a syscall terminate call
 void syscall_terminate_handler(USLOSS_Sysargs *args) {
     int status=(int) args->arg1;
     kernel_Terminate(status);
 }
 
+//handles when the user code has a syscall semcreate call
 void syscall_semcreate_handler(USLOSS_Sysargs *args) {
     int initial_value=(int) args->arg1;
     int sem_id;
@@ -99,6 +117,7 @@ void syscall_semcreate_handler(USLOSS_Sysargs *args) {
     args->arg4 = (void *) (long) result;
 }
 
+//handles when the user code has a syscall P call
 void syscall_semp_handler(USLOSS_Sysargs *args) {
     int sem_id=(int) args->arg1;
     int status=kernel_SemP(sem_id);
@@ -111,6 +130,7 @@ void syscall_semp_handler(USLOSS_Sysargs *args) {
     args->arg4 = (void *) (long) result;
     }
 
+//handles when the user code has a syscall V call
 void syscall_semv_handler(USLOSS_Sysargs *args) {
     int sem_id=(int) args->arg1;
     int status=kernel_SemV(sem_id);
@@ -123,22 +143,20 @@ void syscall_semv_handler(USLOSS_Sysargs *args) {
     args->arg4 = (void *) (long) result;
 }
 
+//handles when the user code has a syscall get time of day call
 void syscall_gettimeofday_handler(USLOSS_Sysargs *args) {
     int tod;
     kernel_GetTimeofDay(&tod);
     args->arg1=(void *) (long) tod;
 }
 
+//handles when the user code has a syscall get pid call
 void syscall_getpid_handler(USLOSS_Sysargs *args) {
     int pid=kernel_GetPID();
     args->arg1=(void *) (long) pid;
 }
 
-typedef struct trampoline{
-    int (*func)(void *);
-    void *arg;
-} trampoline;
-
+//performs the functions of spawn that have to be in the kernel
 int kernel_Spawn(char *name, int (*func)(void *), void *arg, int stack_size, int priority, int *pid) {
     if (name==NULL || func==NULL || stack_size<USLOSS_MIN_STACK || priority<1 || priority>5) {
         return -1;
@@ -157,6 +175,8 @@ int kernel_Spawn(char *name, int (*func)(void *), void *arg, int stack_size, int
     *pid=kidPid;
     return 0;
 }
+
+//trampoline function for spork
 void bounce(void *arg) {
     trampoline *trampo=(trampoline *) arg;
     int psr=USLOSS_PsrGet();
@@ -170,6 +190,7 @@ void bounce(void *arg) {
     Terminate(ret);
 }
 
+//performs the functions of wait that have to be in the kernel
 int kernel_Wait(int *pid, int *status) {
     if (status==NULL) {
         return -3;
@@ -185,12 +206,14 @@ int kernel_Wait(int *pid, int *status) {
     return 0;
 }
 
+//performs the functions of terminate that have to be in the kernel
 void kernel_Terminate(int status) {
     int child_status;
     while (join(&child_status) != -2);
     quit(status);
 }
 
+//performs the functions of semaphore create that have to be in the kernel
 int kernel_SemCreate(int value, int *semaphore) {
     if (value<0) return -1;
     int slot=-1;
@@ -222,6 +245,7 @@ int kernel_SemCreate(int value, int *semaphore) {
     return 0;
 }
 
+//performs the functions of P that have to be in the kernel
 int kernel_SemP(int semaphore) {
     if (semaphore<0 || semaphore>=MAXSEMS || !semaphore_table[semaphore].is_valid)
         return -1;
@@ -239,6 +263,7 @@ int kernel_SemP(int semaphore) {
     return 0;
 }
 
+//performs the functions of V that have to be in the kernel
 int kernel_SemV(int semaphore) {
     if (semaphore<0 || semaphore>=MAXSEMS || !semaphore_table[semaphore].is_valid)
         return -1;
@@ -251,10 +276,12 @@ int kernel_SemV(int semaphore) {
     return 0;
 }
 
+//performs the functions of get time of day that have to be in the kernel
 void kernel_GetTimeofDay(int *tod) {
     *tod=currentTime();
 }
 
+//performs the functions of get pid that have to be in the kernel
 int kernel_GetPID() {
     return getpid();
 }
